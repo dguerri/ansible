@@ -33,6 +33,7 @@ import tempfile
 import traceback
 import fcntl
 import re
+import scp
 import sys
 from termios import tcflush, TCIFLUSH
 from binascii import hexlify
@@ -283,11 +284,17 @@ class Connection(object):
 
         if not os.path.exists(in_path):
             raise errors.AnsibleFileNotFound("file or module does not exist: %s" % in_path)
-
-        try:
-            self.sftp = self.ssh.open_sftp()
-        except Exception, e:
-            raise errors.AnsibleError("failed to open a SFTP connection (%s)" % e)
+        if C.DEFAULT_SCP_IF_SSH:
+            try:
+                self.sftp = scp.SCPClient(self.ssh.get_transport(),
+                                          socket_timeout=self.runner.timeout)
+            except Exception, e:
+                raise errors.AnsibleError("failed to open a SCP connection (%s)" % e)
+        else:
+            try:
+                self.sftp = self.ssh.open_sftp()
+            except Exception, e:
+                raise errors.AnsibleError("failed to open a SFTP connection (%s)" % e)
 
         try:
             self.sftp.put(in_path, out_path)
@@ -300,7 +307,12 @@ class Connection(object):
         if cache_key in SFTP_CONNECTION_CACHE:
             return SFTP_CONNECTION_CACHE[cache_key]
         else:
-            result = SFTP_CONNECTION_CACHE[cache_key] = self.connect().ssh.open_sftp()
+            if C.DEFAULT_SCP_IF_SSH:
+                result = SFTP_CONNECTION_CACHE[cache_key] = \
+                    scp.SCPClient(self.connect().ssh.get_transport(),
+                                  socket_timeout=self.runner.timeout)
+            else:
+                result = SFTP_CONNECTION_CACHE[cache_key] = self.connect().ssh.open_sftp()
             return result
 
     def fetch_file(self, in_path, out_path):
@@ -368,7 +380,8 @@ class Connection(object):
         SSH_CONNECTION_CACHE.pop(cache_key, None)
         SFTP_CONNECTION_CACHE.pop(cache_key, None)
 
-        if self.sftp is not None:
+        # scp opens/closes channel at each get/put
+        if not C.DEFAULT_SCP_IF_SSH and self.sftp is not None:
             self.sftp.close()
 
         if C.HOST_KEY_CHECKING and C.PARAMIKO_RECORD_HOST_KEYS and self._any_keys_added():
